@@ -1,0 +1,43 @@
+/**
+ * All of the CSS for your admin-specific functionality should be
+ * included in this file.
+ */
+ table#stock {
+    font-family: Arial, Helvetica, sans-serif;
+    border-collapse: collapse;
+    width: 100%;
+  }
+  
+  table#stock td, table#stock th {
+    border: 1px solid #ddd;
+    padding: 4px;
+  }
+
+  .sep-col {
+    border-right: 1px solid #555;
+    padding: 4px;
+  }  
+  
+  table#stock tr:nth-child(even){background-color: #e8e8e8;}
+  
+  table#stock tr:hover {background-color: #ddd;}
+  
+  table#stock th {
+    padding-top: 12px;
+    padding-bottom: 12px;
+    text-align: left;
+    background-color: #444;
+    color: white;
+  }
+
+table#stock thead th
+{
+    position: sticky;
+    top: 31px;
+}
+
+table#stock thead tr+tr th
+{
+    position: sticky;
+    top: 74px;
+}
