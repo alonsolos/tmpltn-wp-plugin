@@ -93,7 +93,9 @@ class Tmpltn_Plugin_Admin
 		 * class.
 		 */
 
-		wp_enqueue_style($this->plugin_name, plugin_dir_url(__FILE__) . 'css/tmpltn-plugin-admin.css', array(), $this->version, 'all');
+		$css_file = plugin_dir_path(__FILE__) . 'css/tmpltn-plugin-admin.css';
+		$css_ver = file_exists($css_file) ? filemtime($css_file) : $this->version;
+		wp_enqueue_style($this->plugin_name, plugin_dir_url(__FILE__) . 'css/tmpltn-plugin-admin.css', array(), $css_ver, 'all');
 	}
 
 	/**
@@ -116,7 +118,17 @@ class Tmpltn_Plugin_Admin
 		 * class.
 		 */
 
-		wp_enqueue_script($this->plugin_name, plugin_dir_url(__FILE__) . 'js/tmpltn-plugin-admin.js', array('jquery'), $this->version, false);
+		// Load jsPDF for PDF generation in admin
+		wp_enqueue_script('jspdf', 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js', array(), '2.5.1', true);
+		// Ensure our admin script depends on jsPDF so it's available
+		$js_file = plugin_dir_path(__FILE__) . 'js/tmpltn-plugin-admin.js';
+		$js_ver = file_exists($js_file) ? filemtime($js_file) : $this->version;
+		wp_enqueue_script('tmpltn-plugin-admin-js', plugin_dir_url(__FILE__) . 'js/tmpltn-plugin-admin.js', array('jquery', 'jspdf'), $js_ver, true);
+		// Localize AJAX URL and nonce for PDF generator
+		wp_localize_script('tmpltn-plugin-admin-js', 'tmpltnPdfGen', array(
+			'ajaxUrl' => admin_url('admin-ajax.php'),
+			'nonce'   => wp_create_nonce('tmpltn_pdf_gen'),
+		));
 	}
 
 	public function add_menu()
@@ -136,13 +148,13 @@ class Tmpltn_Plugin_Admin
 			wp_die(__('You do not have sufficient permissions to access this page.'));
 		}
 
-		$this->squareClient = new SquareClient([
-			'accessToken' => get_option('tmpltn_plugin_square_access_token')
-		]);
+		#$this->squareClient = new SquareClient([
+		#	'accessToken' => get_option('tmpltn_plugin_square_access_token')
+		#]);
 
 		echo '<div class="wrap">';
 
-		$tabs = ['Polos', 'Beanies'];
+		$tabs = ['Polos', 'Beanies', 'PDF Generator'];
 
 
 
@@ -158,6 +170,8 @@ class Tmpltn_Plugin_Admin
 			$this->show_tab_polos();
 		} else if ($current_tab == 'Beanies') {
 			$this->show_tab_beanies();
+		 } else if ($current_tab == 'PDF Generator') {
+			$this->show_tab_pdf_generator();
 		}
 
 		echo '</div>';
@@ -173,6 +187,166 @@ class Tmpltn_Plugin_Admin
 		$beaniesListTable->display();
 	}
 
+	/**
+	 * Render the "PDF Generator" tab content.
+	 * Shows a list of product categories as checkboxes and an "Exportar PDF" button.
+	 */
+	function show_tab_pdf_generator()
+	{
+		$terms = get_terms(array(
+			'taxonomy' => 'product_cat',
+			'hide_empty' => false,
+		));
+
+		echo '<div class="wrap">';
+		echo '<h2>PDF Generator</h2>';
+		echo '<form id="tmpltn-pdf-generator" method="post" action="#">';
+
+		echo '<div class="category-checklist" style="margin-top:10px;">';
+		if (!is_wp_error($terms)) {
+			if (!empty($terms)) {
+				foreach ($terms as $term) {
+					echo '<label class="category-item" style="display:block; margin:4px 0;">'
+						. '<input type="radio" name="product_cat" value="' . esc_attr($term->term_id) . '"> '
+						. esc_html($term->name)
+						. '</label>';
+				}
+			} else {
+				echo '<p>No hay categorías para mostrar.</p>';
+			}
+		} else {
+			echo '<p>No se pudieron cargar las categorías.</p>';
+		}
+		echo '</div>';
+
+		echo '<p style="margin-top:12px;">'
+			. '<button type="button" class="button button-primary" id="tmpltn-export-pdf">Exportar PDF</button>'
+			. '</p>';
+
+		echo '</form>';
+		echo '</div>';
+	}
+
+	/**
+	 * AJAX: Return visible products for a given category with name, image and stock flag.
+	 * Only products that are visible in catalog are returned.
+	 */
+	public function ajax_get_products_by_cat() {
+		check_ajax_referer('tmpltn_pdf_gen');
+
+		if (!current_user_can('manage_options')) {
+			wp_send_json_success(array());
+		}
+
+		$cat_id = isset($_POST['cat_id']) ? intval($_POST['cat_id']) : 0;
+		if ($cat_id <= 0) {
+			wp_send_json_success(array());
+		}
+
+		$args = array(
+			'post_type'      => 'product',
+			'post_status'    => 'publish',
+			'posts_per_page' => -1,
+			'fields'         => 'ids',
+			'tax_query'      => array(
+				'relation' => 'AND',
+				array(
+					'taxonomy' => 'product_cat',
+					'field'    => 'term_id',
+					'terms'    => $cat_id,
+				),
+				array(
+					'taxonomy' => 'product_visibility',
+					'field'    => 'name',
+					'terms'    => array('exclude-from-catalog'),
+					'operator' => 'NOT IN',
+				),
+			),
+		);
+
+		$q = new WP_Query($args);
+
+		$data = array();
+		if ($q->have_posts()) {
+			foreach ($q->posts as $product_id) {
+				$name_raw = get_the_title($product_id);
+				$name_decoded = html_entity_decode($name_raw, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+				$name = wp_strip_all_tags($name_decoded);
+
+				$image = get_the_post_thumbnail_url($product_id, 'large');
+				if (!$image) {
+					$image = get_the_post_thumbnail_url($product_id, 'medium');
+				}
+				if (!$image) {
+					$image = '';
+				}
+
+				$manage = get_post_meta($product_id, '_manage_stock', true) === 'yes';
+				$stock = get_post_meta($product_id, '_stock', true);
+				$stock_status = get_post_meta($product_id, '_stock_status', true);
+				$agotado = ($manage && $stock !== '' && intval($stock) === 0) || ($stock_status === 'outofstock');
+
+				// Gather available sizes from variations (only those that manage stock and stock > 0)
+				$sizes = array();
+				if (function_exists('wc_get_product')) {
+					$product = wc_get_product($product_id);
+					if ($product && $product->is_type('variable')) {
+						$variation_ids = $product->get_children();
+						foreach ($variation_ids as $vid) {
+							$variation = wc_get_product($vid);
+							if (!$variation) {
+								continue;
+							}
+							if ($variation->managing_stock() && intval($variation->get_stock_quantity()) > 0) {
+								$attrs = $variation->get_attributes();
+								$label = '';
+								// Try to find attribute containing "talla"
+								foreach ($attrs as $attr_key => $attr_val) {
+									if (stripos($attr_key, 'talla') !== false) {
+										$label = $attr_val;
+										// If taxonomy attribute, convert slug to term name
+										if (taxonomy_exists($attr_key)) {
+											$term = get_term_by('slug', $attr_val, $attr_key);
+											if ($term && !is_wp_error($term)) {
+												$label = $term->name;
+											}
+										}
+										break;
+									}
+								}
+								// Fallback: take first attribute value
+								if ($label === '') {
+									foreach ($attrs as $attr_key => $attr_val) {
+										$label = $attr_val;
+										if (taxonomy_exists($attr_key)) {
+											$term = get_term_by('slug', $attr_val, $attr_key);
+											if ($term && !is_wp_error($term)) {
+												$label = $term->name;
+											}
+										}
+										break;
+									}
+								}
+								if ($label !== '') {
+									$sizes[] = $label;
+								}
+							}
+						}
+						$sizes = array_values(array_unique($sizes));
+					}
+				}
+
+				$data[] = array(
+					'name'  => $name . ($agotado ? ' (agotado)' : ''),
+					'image' => $image,
+					'sizes' => $sizes,
+				);
+			}
+		}
+
+		wp_send_json_success($data);
+	}
+
 	function get_data_polos($startDate = '', $endDate = '')
 	{
 		global $wpdb;
@@ -183,9 +357,9 @@ class Tmpltn_Plugin_Admin
 			$endTime = time(); // Obtiene la fecha y hora actual
 			$endDate = date('Y-m-d', $endTime);
 		}
-		$query =
-			"-- TODO CHANGE INTERVAL
-			(SELECT stock_main.post_title, stock_main.color, stock_main.post_parent, stock_main.xsh, stock_main.sh, stock_main.mh, stock_main.lh, stock_main.xlh, stock_main.sm, stock_main.mm, stock_main.lm, 
+		#-- TODO CHANGE INTERVAL
+		$query = 
+			"(SELECT stock_main.post_title, stock_main.color, stock_main.post_parent, stock_main.xsh, stock_main.sh, stock_main.mh, stock_main.lh, stock_main.xlh, stock_main.sm, stock_main.mm, stock_main.lm, 
 				sum( if( ventas.talla = 'XS Unisex', sale_count, 0 ) ) AS xsh_s,  
 				sum( if( ventas.talla = 'S Unisex', sale_count, 0 ) ) AS sh_s,  
 				sum( if( ventas.talla = 'M Unisex', sale_count, 0 ) ) AS mh_s,  
@@ -206,25 +380,25 @@ class Tmpltn_Plugin_Admin
 							sum( if( talla = 'L Mujer', stock, 0 ) ) AS lm
 						FROM
 						(SELECT IF (LOCATE('Color: ',variation.post_excerpt) = 0, '',SUBSTR(variation.post_excerpt,LOCATE('Color: ',variation.post_excerpt)+7)) AS color, variation.ID, variation.post_parent,parent.post_title, postmeta.meta_value stock, postmeta_talla.meta_value talla
-						FROM `wp4t_posts` variation 
-						LEFT JOIN `wp4t_posts` parent ON
+						FROM `wp_posts` variation 
+						LEFT JOIN `wp_posts` parent ON
 						variation.post_parent = parent.ID AND parent.post_type='product'
-						LEFT JOIN `wp4t_postmeta` postmeta ON
+						LEFT JOIN `wp_postmeta` postmeta ON
 						variation.ID = postmeta.post_id AND postmeta.meta_key='_stock'
-						LEFT JOIN `wp4t_postmeta` postmeta_talla ON
+						LEFT JOIN `wp_postmeta` postmeta_talla ON
 						variation.ID = postmeta_talla.post_id AND postmeta_talla.meta_key='attribute_talla'
-						where variation.post_type='product_variation' AND parent.ID in (SELECT object_id FROM `wp4t_term_relationships` WHERE term_taxonomy_id=45)) stocks
+						where variation.post_type='product_variation' AND parent.ID in (SELECT object_id FROM `wp_term_relationships` WHERE term_taxonomy_id=45)) stocks
 						GROUP BY stocks.post_title, stocks.color, stocks.post_parent
 						order by stocks.post_parent) stock_main
 				LEFT JOIN (SELECT COUNT(*) AS sale_count, order_meta.meta_value, IF (LOCATE(', ',order_items.order_item_name) = 0, '',SUBSTR(order_items.order_item_name,LOCATE(', ',order_items.order_item_name)+2)) AS color, IF (LOCATE(', ',order_items.order_item_name) = 0, SUBSTR(order_items.order_item_name,LOCATE('- ',order_items.order_item_name)+2),SUBSTR(order_items.order_item_name,LOCATE('- ',order_items.order_item_name)+2,LOCATE(', ',order_items.order_item_name)-(LOCATE('- ',order_items.order_item_name)+2))) as talla
-					FROM wp4t_woocommerce_order_items AS order_items
-					INNER JOIN wp4t_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
-					INNER JOIN wp4t_posts AS posts ON order_meta.meta_value = posts.ID
+					FROM wp_woocommerce_order_items AS order_items
+					INNER JOIN wp_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
+					INNER JOIN wp_posts AS posts ON order_meta.meta_value = posts.ID
 					WHERE order_items.order_item_type = 'line_item'
 					AND order_meta.meta_key = '_product_id'
 					AND order_items.order_id IN (
 						SELECT posts.ID AS post_id
-						FROM wp4t_posts AS posts
+						FROM wp_posts AS posts
 						WHERE posts.post_type = 'shop_order'
 							AND posts.post_status IN ('wc-completed','wc-processing','wc-recogido','wc-preparado')
 							AND DATE(posts.post_date) BETWEEN '$startDate' and '$endDate'
@@ -256,25 +430,25 @@ class Tmpltn_Plugin_Admin
 							sum( if( talla = 'L Mujer', stock, 0 ) ) AS lm
 						FROM
 						(SELECT IF (LOCATE('Color: ',variation.post_excerpt) = 0, '',SUBSTR(variation.post_excerpt,LOCATE('Color: ',variation.post_excerpt)+7)) AS color, variation.ID, variation.post_parent,parent.post_title, postmeta.meta_value stock, postmeta_talla.meta_value talla
-						FROM `wp4t_posts` variation 
-						LEFT JOIN `wp4t_posts` parent ON
+						FROM `wp_posts` variation 
+						LEFT JOIN `wp_posts` parent ON
 						variation.post_parent = parent.ID AND parent.post_type='product'
-						LEFT JOIN `wp4t_postmeta` postmeta ON
+						LEFT JOIN `wp_postmeta` postmeta ON
 						variation.ID = postmeta.post_id AND postmeta.meta_key='_stock'
-						LEFT JOIN `wp4t_postmeta` postmeta_talla ON
+						LEFT JOIN `wp_postmeta` postmeta_talla ON
 						variation.ID = postmeta_talla.post_id AND postmeta_talla.meta_key='attribute_talla'
-						where variation.post_type='product_variation' AND parent.ID in (SELECT object_id FROM `wp4t_term_relationships` WHERE term_taxonomy_id=45)) stocks
+						where variation.post_type='product_variation' AND parent.ID in (SELECT object_id FROM `wp_term_relationships` WHERE term_taxonomy_id=45)) stocks
 						GROUP BY stocks.post_title, stocks.color, stocks.post_parent
 						order by stocks.post_parent) stock_main
 				RIGHT JOIN (SELECT COUNT(*) AS sale_count, order_meta.meta_value, IF (LOCATE(', ',order_items.order_item_name) = 0, '',SUBSTR(order_items.order_item_name,LOCATE(', ',order_items.order_item_name)+2)) AS color, IF (LOCATE(', ',order_items.order_item_name) = 0, SUBSTR(order_items.order_item_name,LOCATE('- ',order_items.order_item_name)+2),SUBSTR(order_items.order_item_name,LOCATE('- ',order_items.order_item_name)+2,LOCATE(', ',order_items.order_item_name)-(LOCATE('- ',order_items.order_item_name)+2))) as talla
-					FROM wp4t_woocommerce_order_items AS order_items
-					INNER JOIN wp4t_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
-					INNER JOIN wp4t_posts AS posts ON order_meta.meta_value = posts.ID
+					FROM wp_woocommerce_order_items AS order_items
+					INNER JOIN wp_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
+					INNER JOIN wp_posts AS posts ON order_meta.meta_value = posts.ID
 					WHERE order_items.order_item_type = 'line_item'
 					AND order_meta.meta_key = '_product_id'
 					AND order_items.order_id IN (
 						SELECT posts.ID AS post_id
-						FROM wp4t_posts AS posts
+						FROM wp_posts AS posts
 						WHERE posts.post_type = 'shop_order'
 							AND posts.post_status IN ('wc-completed','wc-processing','wc-recogido','wc-preparado')
 							AND DATE(posts.post_date) BETWEEN '$startDate' and '$endDate'
@@ -285,78 +459,7 @@ class Tmpltn_Plugin_Admin
 				GROUP BY stock_main.post_title, stock_main.color, stock_main.post_parent, stock_main.xsh, stock_main.sh, stock_main.mh, stock_main.lh, stock_main.xlh, stock_main.sm, stock_main.mm, stock_main.lm)";
 		//print_pre($query);
 		$result = $wpdb->get_results($query);
-
-		$count = 0;
-
-		list($itemList, $variationIdsExpand, $variationNames) = $this->getSquareProducts();
-
-		list($idTiendaMiraf, $inventoryResult) = $this->getProductsInventory($itemList, $variationIdsExpand, $variationNames);
-
-		$arrSalesCount = $this->getSquareSales($idTiendaMiraf, $startDate, $endDate);
-
-		#asignar stock de square
-		foreach ($result as $wp_stock) {
-			//$units_sold = get_post_meta( $wp_stock->post_parent, 'total_sales', true );
-			$wasFound = false;
-			$idFound = '';
-			$colorFound = '';
-			if (empty($wp_stock->color)) {
-				foreach ($itemList as $id => $item) {
-					//echo $item . "<br>";
-					$arrItem = explode("-", $item);
-					$itemName = trim($arrItem[0]);
-
-					if (trim($wp_stock->post_title) == "Polo " . $itemName) {
-						$wasFound = true;
-						$idFound = $id;
-						$colorFound = trim($arrItem[1]);
-					}
-				}
-			} else {
-				foreach ($itemList as $id => $item) {
-					//echo $item . "<br>";
-					$arrItem = explode("-", $item);
-					$itemName = trim($arrItem[0]) . " - " . trim($arrItem[1]);
-
-					if (trim($wp_stock->post_title) . " - " . $wp_stock->color == "Polo " . $itemName) {
-						$wasFound = true;
-						$idFound = $id;
-					}
-				}
-			}
-			$wp_stock->wasFound = $wasFound;
-			if ($wasFound) $wp_stock->inventoryResult = $inventoryResult[$idFound];
-			if (empty($wp_stock->color)) {
-				$wp_stock->color = $colorFound;
-			}
-		}
-
-		#asignar ventas de square
-		foreach ($result as $wp_stock) {
-			$wasFound = false;
-			$idFound = '';
-			$colorFound = '';
-			if (empty($wp_stock->color)) {
-				foreach ($arrSalesCount as $name => $item) {
-					$arrItem = explode("-", $name);
-					$itemName = trim($arrItem[0]);
-
-					if (trim($wp_stock->post_title) == "Polo " . $itemName) {
-						$wp_stock->salesResult = $item;
-					}
-				}
-			} else {
-				foreach ($arrSalesCount as $name => $item) {
-					//echo $item . "<br>";
-					$arrItem = explode("-",  $name);
-					$itemName = trim($arrItem[0]) . " - " . trim($arrItem[1]);
-
-					if (trim($wp_stock->post_title) . " - " . $wp_stock->color == "Polo " . $itemName) {
-						$wp_stock->salesResult = $item;
-					}
-				}
-			}
-		}
+		
 
 		return $result;
 	}
@@ -376,8 +479,9 @@ class Tmpltn_Plugin_Admin
 			$my_time = new DateTimeZone('-0500');
 			$datetime->setTimezone($my_time);
 			//echo $datetime->format('Y-m-d H:i:s');
-
-			$s .= '<option ' . selected($_GET['idsnapshot'], $snapshot->id, false) . 'value="' . $snapshot->id . '">' . $datetime->format('Y-m-d H:i:s') . '</option>';
+			
+			$selectedValue = isset($_GET['idsnapshot']) ? $_GET['idsnapshot'] : '';
+			$s .= '<option ' . selected($selectedValue, $snapshot->id, false) . ' value="' . $snapshot->id . '">' . $datetime->format('Y-m-d H:i:s') . '</option>';
 		}
 		$s .= '</select>';
 		$s .= '<button id="doaction" class="button action">Cargar</button>';

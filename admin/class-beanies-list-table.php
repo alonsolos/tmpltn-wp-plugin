@@ -104,15 +104,15 @@ class Beanies_List_Table extends WP_List_Table
 	$result = $wpdb->get_results("SELECT stocks.post_title, stocks.ID, stocks.stock,	
 	-- sales in last 2 months
 	IFNULL((SELECT COUNT(*) AS sale_count
-	FROM wp4t_woocommerce_order_items AS order_items
-	INNER JOIN wp4t_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
-	INNER JOIN wp4t_posts AS posts ON order_meta.meta_value = posts.ID
+	FROM wp_woocommerce_order_items AS order_items
+	INNER JOIN wp_woocommerce_order_itemmeta AS order_meta ON order_items.order_item_id = order_meta.order_item_id
+	INNER JOIN wp_posts AS posts ON order_meta.meta_value = posts.ID
 	WHERE order_items.order_item_type = 'line_item'
 	AND order_meta.meta_key = '_product_id'
 	AND order_meta.meta_value = stocks.ID
 		AND order_items.order_id IN (
 		SELECT posts.ID AS post_id
-		FROM wp4t_posts AS posts
+		FROM wp_posts AS posts
 		WHERE posts.post_type = 'shop_order'
 			AND posts.post_status IN ('wc-completed','wc-processing','wc-recogido','wc-preparado')
 			AND DATE(posts.post_date) BETWEEN (CURRENT_DATE() - INTERVAL 2 MONTH) AND CURRENT_DATE()
@@ -121,22 +121,22 @@ class Beanies_List_Table extends WP_List_Table
 	-- waiting
 	IFNULL((
 	SELECT SUM(order_meta_qty.meta_value)
-	FROM wp4t_woocommerce_order_items AS order_items
-	LEFT JOIN wp4t_woocommerce_order_itemmeta AS order_meta_prodid ON order_items.order_item_id = order_meta_prodid.order_item_id  AND order_meta_prodid.meta_key = '_product_id'
-	LEFT JOIN wp4t_woocommerce_order_itemmeta AS order_meta_qty ON order_items.order_item_id = order_meta_qty.order_item_id  AND order_meta_qty.meta_key = '_qty'
+	FROM wp_woocommerce_order_items AS order_items
+	LEFT JOIN wp_woocommerce_order_itemmeta AS order_meta_prodid ON order_items.order_item_id = order_meta_prodid.order_item_id  AND order_meta_prodid.meta_key = '_product_id'
+	LEFT JOIN wp_woocommerce_order_itemmeta AS order_meta_qty ON order_items.order_item_id = order_meta_qty.order_item_id  AND order_meta_qty.meta_key = '_qty'
 	WHERE order_items.order_item_type = 'line_item'
 	AND order_meta_prodid.meta_value = stocks.ID
 	AND order_items.order_id IN (
 		SELECT posts.ID AS post_id
-		FROM wp4t_posts AS posts
+		FROM wp_posts AS posts
 		WHERE posts.post_type = 'shop_order' AND posts.post_status = 'wc-on-hold'
 	)),0) AS waiting	
 FROM
 (SELECT product.ID, product.post_title, postmeta.meta_value stock
-FROM  `wp4t_posts` product 
-LEFT JOIN `wp4t_postmeta` postmeta ON
+FROM  `wp_posts` product 
+LEFT JOIN `wp_postmeta` postmeta ON
 product.ID = postmeta.post_id AND postmeta.meta_key='_stock'
-where product.post_type='product' AND product.ID in (SELECT object_id FROM `wp4t_term_relationships` WHERE term_taxonomy_id=49)) stocks
+where product.post_type='product' AND product.ID in (SELECT object_id FROM `wp_term_relationships` WHERE term_taxonomy_id=49)) stocks
 GROUP BY stocks.post_title, stocks.ID
 order by stocks.ID");
 	
