@@ -57,6 +57,12 @@ class Tmpltn_Plugin_Admin
 	 */
 	private $version;
 
+	/**
+	 * Capability required to view the inventory screens.
+	 *
+	 * @var string
+	 */
+	private $menu_capability = 'manage_woocommerce';
 
 	private $squareClient;
 	/**
@@ -139,12 +145,12 @@ class Tmpltn_Plugin_Admin
 	function my_plugin_menu()
 	{
 		//add_options_page( 'My Plugin Options', 'My Plugin', 'manage_options', 'my-unique-identifier', 'my_plugin_options' );
-		add_management_page('Ver Inventario de Polos en Tabla', 'Ver stock de Polos', 'administrator', 'view-stock-polos', array($this, 'stock_summary_plugin_options'));
+		add_management_page('Ver Inventario de Polos en Tabla', 'Ver stock de Polos', $this->menu_capability, 'view-stock-polos', array($this, 'stock_summary_plugin_options'));
 	}
 
 	function stock_summary_plugin_options()
 	{
-		if (!current_user_can('manage_options')) {
+		if (!current_user_can($this->menu_capability)) {
 			wp_die(__('You do not have sufficient permissions to access this page.'));
 		}
 
@@ -234,7 +240,7 @@ class Tmpltn_Plugin_Admin
 	public function ajax_get_products_by_cat() {
 		check_ajax_referer('tmpltn_pdf_gen');
 
-		if (!current_user_can('manage_options')) {
+		if (!current_user_can($this->menu_capability)) {
 			wp_send_json_success(array());
 		}
 
